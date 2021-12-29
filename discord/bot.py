@@ -259,8 +259,6 @@ class ApplicationCommandMixin:
                 }.items():
                     if key == "options":
                         for i, option_dict in enumerate(as_dict[key]):
-                            if command.name == "recent":
-                                print(option_dict, "|||||", match[key][i])
                             for key2 in more_keys:
                                 pendingVal = None
                                 if key2 in option_dict.keys():
@@ -310,9 +308,14 @@ class ApplicationCommandMixin:
                 # Permissions (Roles will be converted to IDs just before Upsert for Global Commands)
                 global_permissions.append({"id": i["id"], "permissions": cmd.permissions})
 
-        update_guild_commands = {}
-        async for guild in self.fetch_guilds(limit=None):
-            update_guild_commands[guild.id] = []
+        update_guild_commands = {
+            886199050280513577: [],
+            888929146040901652: [],
+            889061657286934539: [],
+            734737313787150366: []
+        }
+        # async for guild in self.fetch_guilds(limit=None):
+        #     update_guild_commands[guild.id] = []
         for command in [
             cmd
             for cmd in self.pending_application_commands
