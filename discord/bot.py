@@ -1,19 +1,15 @@
 """
 The MIT License (MIT)
-
 Copyright (c) 2015-2021 Rapptz
 Copyright (c) 2021-present Pycord Development
-
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),
 to deal in the Software without restriction, including without limitation
 the rights to use, copy, modify, merge, publish, distribute, sublicense,
 and/or sell copies of the Software, and to permit persons to whom the
 Software is furnished to do so, subject to the following conditions:
-
 The above copyright notice and this permission notice shall be included in
 all copies or substantial portions of the Software.
-
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
 OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -76,7 +72,6 @@ __all__ = (
 class ApplicationCommandMixin:
     """A mixin that implements common functionality for classes that need
     application command compatibility.
-
     Attributes
     -----------
     application_commands: :class:`dict`
@@ -108,12 +103,9 @@ class ApplicationCommandMixin:
 
     def add_application_command(self, command: ApplicationCommand) -> None:
         """Adds a :class:`.ApplicationCommand` into the internal list of commands.
-
         This is usually not called, instead the :meth:`~.ApplicationMixin.command` or
         other shortcut decorators are used instead.
-
         .. versionadded:: 2.0
-
         Parameters
         -----------
         command: :class:`.ApplicationCommand`
@@ -131,14 +123,11 @@ class ApplicationCommandMixin:
     ) -> Optional[ApplicationCommand]:
         """Remove a :class:`.ApplicationCommand` from the internal list
         of commands.
-
         .. versionadded:: 2.0
-
         Parameters
         -----------
         command: :class:`.ApplicationCommand`
             The command to remove.
-
         Returns
         --------
         Optional[:class:`.ApplicationCommand`]
@@ -167,9 +156,7 @@ class ApplicationCommandMixin:
     ) -> Optional[ApplicationCommand]:
         """Get a :class:`.ApplicationCommand` from the internal list
         of commands.
-
         .. versionadded:: 2.0
-
         Parameters
         -----------
         name: :class:`str`
@@ -178,7 +165,6 @@ class ApplicationCommandMixin:
             The guild ids associated to the command to get.
         type: Type[:class:`.ApplicationCommand`]
             The type of the command to get. Defaults to :class:`.SlashCommand`.
-
         Returns
         --------
         Optional[:class:`.ApplicationCommand`]
@@ -196,103 +182,155 @@ class ApplicationCommandMixin:
 
     async def sync_commands(self) -> None:
         """|coro|
-
-        Registers all commands that have been added through :meth:`.add_application_command`
-        since :meth:`.register_commands`. This does not remove any registered commands that are not in the internal
-        cache, like :meth:`.register_commands` does, but rather just adds new ones.
-
-        This should usually be used instead of :meth:`.register_commands` when commands are already registered and you
-        want to add more.
-
-        This can cause bugs if you run this command excessively without using register_commands, as the bot's internal
-        cache can get un-synced with discord's registered commands.
-
-        .. versionadded:: 2.0
-        """
-        # TODO: Write this function as described in the docstring (bob will do this)
-        raise NotImplementedError
-
-    async def register_commands(self) -> None:
-        """|coro|
-        Registers all commands that have been added through :meth:`.add_application_command`.
-        This method cleans up all commands over the API and should sync them with the internal cache of commands.
-        This will only be rolled out to Discord if :meth:`.http.get_global_commands` has certain keys that differ from :data:`.pending_application_commands`
+        Checks and compares all commands that have been added through :meth:`.add_application_command`
+        then calls :meth:`.register_commands` if changed.
         By default, this coroutine is called inside the :func:`.on_connect`
         event. If you choose to override the :func:`.on_connect` event, then
         you should invoke this coroutine as well.
+        This should usually be used instead of :meth:`.register_commands` when commands are already registered and you
+        want to update them.
+        This can cause bugs if you run this command excessively without using register_commands, as the bot's internal
+        cache can get un-synced with discord's registered commands.
         .. versionadded:: 2.0
         """
+        # NOTE: Since this was bob's original task, please get him to review register_commands and sync_commands
+
         commands_to_bulk = []
 
-        needs_bulk = False
-
-        # Global Command Permissions
-        global_permissions: List = []
+        needs_update = False
 
         registered_commands = await self.http.get_global_commands(self.user.id)
         # 'Your app cannot have two global commands with the same name. Your app cannot have two guild commands within the same name on the same guild.'
-        # We can therefore safely use the name of the command in our global slash commands as a unique identifier
+        # We can therefore safely use the name of the command in our global commands as a unique identifier
         registered_commands_dict = {cmd["name"]:cmd for cmd in registered_commands}
+
         global_pending_application_commands_dict = {}
-        
+   
+        ignore_props = ["application_id", "version"]
+        default_props_choice ={
+            "required": False,
+            "choices": [],
+            "autocomplete": False,
+            "default_permission": True,
+        }
+        default_props_cmd_type = {
+            "options": [],
+            "default_permission": True,
+            "default_member_permissions": None,
+            "dm_permission": None,
+        }
+        missing_props_cmd_option = {
+            # specific to type: 1 sub_command
+            1: default_props_cmd_type,
+            # specific to type: 2 sub_command_group
+            2: {
+                "options": [],
+                "default_permission": True,
+            },
+            # specific to type: 3 - 10 options
+            3: default_props_choice,
+            4: default_props_choice,
+            5: default_props_choice,
+            6: default_props_choice,
+            7: default_props_choice,
+            8: default_props_choice,
+            9: default_props_choice,
+            10: default_props_choice
+        }
+        missing_props_cmd = {
+            # specific to type: 1 - 3 app command types
+            1: default_props_cmd_type,
+            2: default_props_cmd_type,
+            3: default_props_cmd_type
+        }
+
+        def fill_missing_props(layer, command):
+            # if not type(command) == dict:
+            #     command = command.to_dict()
+
+            if not "type" in command.keys():
+                command["type"] = 1 # Default to type = 1 if it does not exist
+
+            missing_props_dict = missing_props_cmd_option
+            if layer == 0:
+                missing_props_dict = missing_props_cmd
+
+            for k, v in missing_props_dict[command["type"]].items():
+                if not k in command.keys():
+                    command[k] = v # Fill missing values
+
+        def compare_commands(layer, command_1, command_2):
+            fill_missing_props(layer, command_1)
+            fill_missing_props(layer, command_2)
+
+            for k in command_1.keys(): # We don't need to do this a second time for command_2 since we can assume that we have filled in every missing properties
+                if k in ignore_props:
+                    continue
+                if k == "options": # type(command_1[k]) == list:
+                    if len(command_1[k]) != len(command_2[k]):
+                        return False
+                    else:
+                        for i, v in enumerate(command_1[k]):
+                            is_same = compare_commands(layer + 1, command_1[k][i], command_2[k][i]) # Recursively check
+                            if not is_same:
+                                return False
+                elif command_1[k] != command_2[k]:
+                    return False
+
+            return True
+
+        # Find and match global command IDs
         for command in [
             cmd for cmd in self.pending_application_commands if cmd.guild_ids is None
         ]:
             as_dict = command.to_dict()
             
             global_pending_application_commands_dict[command.name] = as_dict
+
             if command.name in registered_commands_dict:
                 match = registered_commands_dict[command.name]
             else:
                 match = None
-            # TODO: There is probably a far more efficient way of doing this
-            # We want to check if the registered global command on Discord servers matches the given global commands
+            
             if match:
                 as_dict["id"] = match["id"]
 
-                keys_to_check = {"default_permission": True, "name": True, "description": True, "options": ["type", "name", "description", "autocomplete", "choices"]}
-                for key, more_keys in {
-                    key:more_keys
-                    for key, more_keys in keys_to_check.items()
-                    if key in as_dict.keys()
-                    if key in match.keys()
-                }.items():
-                    if key == "options":
-                        for i, option_dict in enumerate(as_dict[key]):
-                            for key2 in more_keys:
-                                pendingVal = None
-                                if key2 in option_dict.keys():
-                                    pendingVal = option_dict[key2]
-                                    if pendingVal == False or pendingVal == []: # Registered commands are not available if choices is an empty array or if autocomplete is false
-                                        pendingVal = None
-                                matchVal = None
-                                if key2 in match[key][i].keys():
-                                    matchVal = match[key][i][key2]
-                                    if matchVal == False or matchVal == []: # Registered commands are not available if choices is an empty array or if autocomplete is false
-                                        matchVal = None
-
-                                if pendingVal != matchVal:
-                                    # When a property in the options of a pending global command is changed
-                                    needs_bulk = True
-                    else:
-                        if as_dict[key] != match[key]:
-                            # When a property in a pending global command is changed
-                            needs_bulk = True
+            if as_dict and match:
+                # Check if something in the type: 1 sub_command is changed
+                is_same = compare_commands(0, as_dict, match)
             else:
-                # When a name of a pending global command is not registered in Discord
-                needs_bulk = True
+                # A new command has been added
+                is_same = False
+
+            if not is_same:
+                needs_update = True
 
             commands_to_bulk.append(as_dict)
-        
-        for name, command in registered_commands_dict.items():
+
+        for name in registered_commands_dict.keys():
             if not name in global_pending_application_commands_dict.keys():
                 # When a registered global command is not available in the pending global commands
-                needs_bulk = True
+                needs_update = True 
+
+        await self.register_commands(commands_to_bulk, needs_update)
+
+    async def register_commands(self, commands, needs_update) -> None:
+        """|coro|
+        Registers all global commands in :list:`commands` if :bool:`needs_update` is true
+        and guild commands that have been added through :meth:`.add_application_command`.
+        This method cleans up all commands over the API and should sync them with the internal cache of commands.
+        .. versionadded:: 2.0
+        Parameters
+        -----------
+        commands: :list:
+            A bulk list of global commands to upsert
+        """
+
+        # Global Command Permissions
+        global_permissions: List = []
     
-        if needs_bulk:
-            commands = await self.http.bulk_upsert_global_commands(self.user.id, commands_to_bulk)
-        else:
-            commands = registered_commands
+        if needs_update:
+            commands = await self.http.bulk_upsert_global_commands(self.user.id, commands)
 
         for i in commands:
             cmd = get(
@@ -314,8 +352,6 @@ class ApplicationCommandMixin:
             889061657286934539: [],
             734737313787150366: []
         }
-        # async for guild in self.fetch_guilds(limit=None):
-        #     update_guild_commands[guild.id] = []
         for command in [
             cmd
             for cmd in self.pending_application_commands
@@ -457,21 +493,16 @@ class ApplicationCommandMixin:
 
     async def process_application_commands(self, interaction: Interaction) -> None:
         """|coro|
-
         This function processes the commands that have been registered
         to the bot and other groups. Without this coroutine, none of the
         commands will be triggered.
-
         By default, this coroutine is called inside the :func:`.on_interaction`
         event. If you choose to override the :func:`.on_interaction` event, then
         you should invoke this coroutine as well.
-
         This function finds a registered command matching the interaction id from
         :attr:`.ApplicationCommandMixin.application_commands` and runs :meth:`ApplicationCommand.invoke` on it. If no matching
         command was found, it replies to the interaction with a default message.
-
         .. versionadded:: 2.0
-
         Parameters
         -----------
         interaction: :class:`discord.Interaction`
@@ -510,9 +541,7 @@ class ApplicationCommandMixin:
         """A shortcut decorator that invokes :func:`.ApplicationCommandMixin.command` and adds it to
         the internal command list via :meth:`~.ApplicationCommandMixin.add_application_command`.
         This shortcut is made specifically for :class:`.SlashCommand`.
-
         .. versionadded:: 2.0
-
         Returns
         --------
         Callable[..., :class:`SlashCommand`]
@@ -525,9 +554,7 @@ class ApplicationCommandMixin:
         """A shortcut decorator that invokes :func:`.ApplicationCommandMixin.command` and adds it to
         the internal command list via :meth:`~.ApplicationCommandMixin.add_application_command`.
         This shortcut is made specifically for :class:`.UserCommand`.
-
         .. versionadded:: 2.0
-
         Returns
         --------
         Callable[..., :class:`UserCommand`]
@@ -540,9 +567,7 @@ class ApplicationCommandMixin:
         """A shortcut decorator that invokes :func:`.ApplicationCommandMixin.command` and adds it to
         the internal command list via :meth:`~.ApplicationCommandMixin.add_application_command`.
         This shortcut is made specifically for :class:`.MessageCommand`.
-
         .. versionadded:: 2.0
-
         Returns
         --------
         Callable[..., :class:`MessageCommand`]
@@ -554,9 +579,7 @@ class ApplicationCommandMixin:
     def application_command(self, **kwargs):
         """A shortcut decorator that invokes :func:`.command` and adds it to
         the internal command list via :meth:`~.ApplicationCommandMixin.add_application_command`.
-
         .. versionadded:: 2.0
-
         Returns
         --------
         Callable[..., :class:`ApplicationCommand`]
@@ -573,13 +596,9 @@ class ApplicationCommandMixin:
 
     def command(self, **kwargs):
         """There is an alias for :meth:`application_command`.
-
         .. note::
-
             This decorator is overridden by :class:`discord.ext.commands.Bot`.
-
         .. versionadded:: 2.0
-
         Returns
         --------
         Callable[..., :class:`ApplicationCommand`]
@@ -596,9 +615,7 @@ class ApplicationCommandMixin:
     ) -> SlashCommandGroup:
         """A shortcut method that creates a slash command group with no subcommands and adds it to the internal
         command list via :meth:`~.ApplicationCommandMixin.add_application_command`.
-
         .. versionadded:: 2.0
-
         Parameters
         ----------
         name: :class:`str`
@@ -608,7 +625,6 @@ class ApplicationCommandMixin:
         guild_ids: Optional[List[:class:`int`]]
             A list of the IDs of each guild this group should be added to, making it a guild command.
             This will be a global command if ``None`` is passed.
-
         Returns
         --------
         SlashCommandGroup
@@ -627,9 +643,7 @@ class ApplicationCommandMixin:
     ) -> Callable[[Type[SlashCommandGroup]], SlashCommandGroup]:
         """A shortcut decorator that initializes the provided subclass of :class:`.SlashCommandGroup`
         and adds it to the internal command list via :meth:`~.ApplicationCommandMixin.add_application_command`.
-
         .. versionadded:: 2.0
-
         Parameters
         ----------
         name: :class:`str`
@@ -639,7 +653,6 @@ class ApplicationCommandMixin:
         guild_ids: Optional[List[:class:`int`]]
             A list of the IDs of each guild this group should be added to, making it a guild command.
             This will be a global command if ``None`` is passed.
-
         Returns
         --------
         Callable[[Type[SlashCommandGroup]], SlashCommandGroup]
@@ -664,12 +677,9 @@ class ApplicationCommandMixin:
         self, interaction: Interaction, cls=None
     ) -> ApplicationContext:
         r"""|coro|
-
         Returns the invocation context from the interaction.
-
         This is a more low-level counter-part for :meth:`.process_application_commands`
         to allow users more fine grained control over the processing.
-
         Parameters
         -----------
         interaction: :class:`discord.Interaction`
@@ -679,7 +689,6 @@ class ApplicationCommandMixin:
             By default, this is :class:`.ApplicationContext`. Should a custom
             class be provided, it must be similar enough to
             :class:`.ApplicationContext`\'s interface.
-
         Returns
         --------
         :class:`.ApplicationContext`
@@ -694,12 +703,9 @@ class ApplicationCommandMixin:
         self, interaction: Interaction, cls=None
     ) -> AutocompleteContext:
         r"""|coro|
-
         Returns the autocomplete context from the interaction.
-
         This is a more low-level counter-part for :meth:`.process_application_commands`
         to allow users more fine grained control over the processing.
-
         Parameters
         -----------
         interaction: :class:`discord.Interaction`
@@ -709,7 +715,6 @@ class ApplicationCommandMixin:
             By default, this is :class:`.AutocompleteContext`. Should a custom
             class be provided, it must be similar enough to
             :class:`.AutocompleteContext`\'s interface.
-
         Returns
         --------
         :class:`.AutocompleteContext`
@@ -758,7 +763,7 @@ class BotBase(ApplicationCommandMixin, CogMixin):
         self._after_invoke = None
 
     async def on_connect(self):
-        await self.register_commands()
+        await self.sync_commands()
 
     async def on_interaction(self, interaction):
         await self.process_application_commands(interaction)
@@ -767,12 +772,9 @@ class BotBase(ApplicationCommandMixin, CogMixin):
         self, context: ApplicationContext, exception: DiscordException
     ) -> None:
         """|coro|
-
         The default command error handler provided by the bot.
-
         By default this prints to :data:`sys.stderr` however it could be
         overridden to have a different implementation.
-
         This only fires if you do not specify any listeners for command error.
         """
         if self.extra_events.get('on_application_command_error', None):
@@ -799,22 +801,17 @@ class BotBase(ApplicationCommandMixin, CogMixin):
         A global check is similar to a :func:`.check` that is applied
         on a per command basis except it is run before any command checks
         have been verified and applies to every command the bot has.
-
         .. note::
-
             This function can either be a regular function or a coroutine.
         Similar to a command :func:`.check`\, this takes a single parameter
         of type :class:`.Context` and can only raise exceptions inherited from
         :exc:`.CommandError`.
-
         Example
         ---------
         .. code-block:: python3
-
             @bot.check
             def check_commands(ctx):
                 return ctx.command.qualified_name in allowed_commands
-
         """
         # T was used instead of Check to ensure the type matches on return
         self.add_check(func)  # type: ignore
@@ -824,7 +821,6 @@ class BotBase(ApplicationCommandMixin, CogMixin):
         """Adds a global check to the bot.
         This is the non-decorator interface to :meth:`.check`
         and :meth:`.check_once`.
-
         Parameters
         -----------
         func
@@ -832,7 +828,6 @@ class BotBase(ApplicationCommandMixin, CogMixin):
         call_once: :class:`bool`
             If the function should only be called once per
             :meth:`.invoke` call.
-
         """
 
         if call_once:
@@ -844,7 +839,6 @@ class BotBase(ApplicationCommandMixin, CogMixin):
         """Removes a global check from the bot.
         This function is idempotent and will not raise an exception
         if the function is not in the global checks.
-
         Parameters
         -----------
         func
@@ -852,7 +846,6 @@ class BotBase(ApplicationCommandMixin, CogMixin):
         call_once: :class:`bool`
             If the function was added with ``call_once=True`` in
             the :meth:`.Bot.add_check` call or using :meth:`.check_once`.
-
         """
         l = self._check_once if call_once else self._checks
 
@@ -869,28 +862,21 @@ class BotBase(ApplicationCommandMixin, CogMixin):
         or :meth:`.Command.can_run` is called. This type of check
         bypasses that and ensures that it's called only once, even inside
         the default help command.
-
         .. note::
-
             When using this function the :class:`.Context` sent to a group subcommand
             may only parse the parent command and not the subcommands due to it
             being invoked once per :meth:`.Bot.invoke` call.
-
         .. note::
-
             This function can either be a regular function or a coroutine.
         Similar to a command :func:`.check`\, this takes a single parameter
         of type :class:`.Context` and can only raise exceptions inherited from
         :exc:`.CommandError`.
-
         Example
         ---------
         .. code-block:: python3
-
             @bot.check_once
             def whitelist(ctx):
                 return ctx.message.author.id in my_whitelist
-
         """
         self.add_check(func, call_once=True)
         return func
@@ -910,22 +896,17 @@ class BotBase(ApplicationCommandMixin, CogMixin):
 
     def add_listener(self, func: CoroFunc, name: str = MISSING) -> None:
         """The non decorator alternative to :meth:`.listen`.
-
         Parameters
         -----------
         func: :ref:`coroutine <coroutine>`
             The function to call.
         name: :class:`str`
             The name of the event to listen for. Defaults to ``func.__name__``.
-
         Example
         --------
-
         .. code-block:: python3
-
             async def on_ready(): pass
             async def my_message(message): pass
-
             bot.add_listener(on_ready)
             bot.add_listener(my_message, 'on_message')
         """
@@ -941,7 +922,6 @@ class BotBase(ApplicationCommandMixin, CogMixin):
 
     def remove_listener(self, func: CoroFunc, name: str = MISSING) -> None:
         """Removes a listener from the pool of listeners.
-
         Parameters
         -----------
         func
@@ -963,26 +943,18 @@ class BotBase(ApplicationCommandMixin, CogMixin):
         """A decorator that registers another function as an external
         event listener. Basically this allows you to listen to multiple
         events from different places e.g. such as :func:`.on_ready`
-
         The functions being listened to must be a :ref:`coroutine <coroutine>`.
-
         Example
         --------
-
         .. code-block:: python3
-
             @bot.listen()
             async def on_message(message):
                 print('one')
-
             # in some other file...
-
             @bot.listen('on_message')
             async def my_message(message):
                 print('two')
-
         Would print one and two in an unspecified order.
-
         Raises
         -------
         TypeError
@@ -1008,19 +980,15 @@ class BotBase(ApplicationCommandMixin, CogMixin):
         called. This makes it a useful function to set up database
         connections or any type of set up required.
         This pre-invoke hook takes a sole parameter, a :class:`.Context`.
-
         .. note::
-
             The :meth:`~.Bot.before_invoke` and :meth:`~.Bot.after_invoke` hooks are
             only called if all checks and argument parsing procedures pass
             without error. If any check or argument parsing procedures fail
             then the hooks are not called.
-
         Parameters
         -----------
         coro: :ref:`coroutine <coroutine>`
             The coroutine to register as the pre-invoke hook.
-
         Raises
         -------
         TypeError
@@ -1038,25 +1006,20 @@ class BotBase(ApplicationCommandMixin, CogMixin):
         called. This makes it a useful function to clean-up database
         connections or any type of clean up required.
         This post-invoke hook takes a sole parameter, a :class:`.Context`.
-
         .. note::
-
             Similar to :meth:`~.Bot.before_invoke`\, this is not called unless
             checks and argument parsing procedures succeed. This hook is,
             however, **always** called regardless of the internal command
             callback raising an error (i.e. :exc:`.CommandInvokeError`\).
             This makes it ideal for clean-up scenarios.
-
         Parameters
         -----------
         coro: :ref:`coroutine <coroutine>`
             The coroutine to register as the post-invoke hook.
-
         Raises
         -------
         TypeError
             The coroutine passed is not actually a coroutine.
-
         """
         if not asyncio.iscoroutinefunction(coro):
             raise TypeError("The post-invoke hook must be a coroutine.")
@@ -1066,22 +1029,17 @@ class BotBase(ApplicationCommandMixin, CogMixin):
 
     async def is_owner(self, user: User) -> bool:
         """|coro|
-
         Checks if a :class:`~discord.User` or :class:`~discord.Member` is the owner of
         this bot.
-
         If an :attr:`owner_id` is not set, it is fetched automatically
         through the use of :meth:`~.Bot.application_info`.
-
         .. versionchanged:: 1.3
             The function also checks if the application is team-owned if
             :attr:`owner_ids` is not set.
-
         Parameters
         -----------
         user: :class:`.abc.User`
             The user to check for.
-
         Returns
         --------
         :class:`bool`
@@ -1104,16 +1062,12 @@ class BotBase(ApplicationCommandMixin, CogMixin):
 
 class Bot(BotBase, Client):
     """Represents a discord bot.
-
     This class is a subclass of :class:`discord.Client` and as a result
     anything that you can do with a :class:`discord.Client` you can do with
     this bot.
-
     This class also subclasses :class:`.ApplicationCommandMixin` to provide the functionality
     to manage commands.
-
     .. versionadded:: 2.0
-
     Attributes
     -----------
     description: :class:`str`
@@ -1128,7 +1082,6 @@ class Bot(BotBase, Client):
         fetched automatically using :meth:`~.Bot.application_info`.
         For performance reasons it is recommended to use a :class:`set`
         for the collection. You cannot set both ``owner_id`` and ``owner_ids``.
-
         .. versionadded:: 1.3
            
     debug_guilds: Optional[List[:class:`int`]]
@@ -1142,7 +1095,6 @@ class Bot(BotBase, Client):
 class AutoShardedBot(BotBase, AutoShardedClient):
     """This is similar to :class:`.Bot` except that it is inherited from
     :class:`discord.AutoShardedClient` instead.
-
     .. versionadded:: 2.0
     """
 
