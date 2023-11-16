@@ -532,7 +532,7 @@ class StickerFormatType(Enum):
             StickerFormatType.png: 'png',
             StickerFormatType.apng: 'png',
             StickerFormatType.lottie: 'json',
-            StickerFormatType.gif: "gif",
+            StickerFormatType.gif: 'gif',
         }
         # fmt: on
         return lookup[self]
